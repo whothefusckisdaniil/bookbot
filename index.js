@@ -1,18 +1,17 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
 const xml2js = require('xml2js');
+const http = require('http');
 
-// 1. Вставь свой токен сюда (обязательно в кавычках)
+// 1. ВСТАВЬ ТОКЕН СЮДА
 const bot = new Telegraf('8554302863:AAHV5slCNkayIz1_AY9EVJ_VB7Xu2NK--_o');
 
-// Парсер XML
 const parser = new xml2js.Parser();
-
-// Ссылка на Флибусту (если основной сайт блокируется провайдером, бот может не работать без VPN/Proxy)
+// Используем зеркало, которое лучше всего работает с серверов
 const FLIBUSTA_HOST = 'http://flibusta.is'; 
 
 bot.start((ctx) => {
-    ctx.reply('Привет! Напиши мне название книги, и я поищу её на Флибусте.');
+    ctx.reply('Привет! Напиши название книги или автора. Я отфильтрую лишнее и дам ссылки.');
 });
 
 bot.on('text', async (ctx) => {
@@ -20,75 +19,87 @@ bot.on('text', async (ctx) => {
     ctx.reply(`🔎 Ищу: "${query}"...`);
 
     try {
-        // 2. Делаем запрос к OPDS каталогу
-        // encodeURIComponent нужен, чтобы русский текст превратился в понятный ссылке код
         const searchUrl = `${FLIBUSTA_HOST}/opds/search?searchTerm=${encodeURIComponent(query)}`;
-        
         const response = await axios.get(searchUrl);
 
-        // 3. Парсим XML ответ в удобный объект
         parser.parseString(response.data, (err, result) => {
             if (err) {
                 console.error(err);
-                return ctx.reply('Ошибка при чтении данных с сайта.');
+                return ctx.reply('Ошибка обработки данных.');
             }
 
-            // Проверяем, есть ли результаты (в структуре XML это feed -> entry)
-            const entries = result.feed.entry;
-
-            if (!entries) {
-                return ctx.reply('Ничего не найдено 😔');
+            // Проверяем структуру ответа
+            if (!result.feed || !result.feed.entry) {
+                return ctx.reply('Ничего не найдено или Флибуста вернула пустой список.');
             }
 
-            // Если результат один, xml2js не делает массив, делаем его сами
-            const books = Array.isArray(entries) ? entries : [entries];
-
-            // 4. Формируем ответ (берем первые 5 книг, чтобы не спамить)
+            const entries = Array.isArray(result.feed.entry) ? result.feed.entry : [result.feed.entry];
             let message = '';
-            books.slice(0, 5).forEach((book) => {
-                const title = book.title[0];
-                // Ищем автора (иногда его нет)
-                const author = book.author ? book.author[0].name[0] : 'Неизвестен';
-                
-                message += `📖 **${title}**\n👤 ${author}\n`;
+            let foundBooksCount = 0;
 
-                // Ищем ссылки на скачивание (fb2, epub)
+            // Перебираем все результаты
+            entries.forEach((book) => {
+                // Ограничение: показываем максимум 5 КНИГ (чтобы не спамить)
+                if (foundBooksCount >= 5) return;
+
+                // 1. Сначала собираем ссылки на скачивание
+                let linksMessage = '';
+                let hasDownloadLinks = false;
+
                 if (book.link) {
                     book.link.forEach(link => {
                         const type = link.$.type;
                         const href = link.$.href;
                         
-                        if (type.includes('fb2')) message += `⬇ [FB2](${FLIBUSTA_HOST}${href})\n`;
-                        if (type.includes('epub')) message += `⬇ [EPUB](${FLIBUSTA_HOST}${href})\n`;
-                        if (type.includes('mobi')) message += `⬇ [MOBI](${FLIBUSTA_HOST}${href})\n`;
+                        // Ищем только файлы книг
+                        if (type.includes('fb2')) {
+                            linksMessage += `⬇ [FB2](${FLIBUSTA_HOST}${href.replace('/opds', '')})\n`; // фикс ссылки
+                            hasDownloadLinks = true;
+                        }
+                        else if (type.includes('epub')) {
+                            linksMessage += `⬇ [EPUB](${FLIBUSTA_HOST}${href.replace('/opds', '')})\n`;
+                            hasDownloadLinks = true;
+                        }
+                        else if (type.includes('mobi')) {
+                            linksMessage += `⬇ [MOBI](${FLIBUSTA_HOST}${href.replace('/opds', '')})\n`;
+                            hasDownloadLinks = true;
+                        }
                     });
                 }
-                message += '\n---\n';
+
+                // 2. ВАЖНЫЙ МОМЕНТ: Добавляем в ответ ТОЛЬКО если нашли ссылки на скачивание
+                if (hasDownloadLinks) {
+                    const title = book.title[0];
+                    const author = book.author ? book.author[0].name[0] : 'Автор не указан';
+                    
+                    message += `📖 **${title}**\n👤 ${author}\n${linksMessage}\n---\n`;
+                    foundBooksCount++;
+                }
             });
 
-            // Отправляем результат (Markdown позволяет делать ссылки)
-            ctx.replyWithMarkdown(message);
+            if (message.length === 0) {
+                ctx.reply('Вроде что-то нашел, но скачать нельзя (возможно, это просто категории). Попробуй уточнить запрос.');
+            } else {
+                ctx.replyWithMarkdown(message);
+            }
         });
 
     } catch (error) {
-        console.error('Ошибка сети:', error.message);
-        ctx.reply('Ошибка соединения. Возможно, Flibusta заблокирована на сервере/компьютере, где запущен бот.');
+        console.error('Ошибка:', error.message);
+        ctx.reply('Флибуста не отвечает или ошибка сети.');
     }
 });
+
+// HTTP сервер для Render (чтобы не засыпал)
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is alive!');
+});
+server.listen(process.env.PORT || 3000);
 
 // Запуск бота
 bot.launch();
 console.log('Бот запущен...');
 
-// Обработка корректной остановки
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-// Простой сервер, чтобы Render не усыплял бота из-за отсутствия порта
-const http = require('http');
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is alive!');
-});
-// Слушаем порт, который выдаст сервер, или 3000
-server.listen(process.env.PORT || 3000);
