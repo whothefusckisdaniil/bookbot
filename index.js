@@ -9,7 +9,7 @@ const BOT_TOKEN = '8554302863:AAHV5slCNkayIz1_AY9EVJ_VB7Xu2NK--_o';
 
 // СЮДА ВСТАВЬ IP:PORT, который ты нашел (например: '194.169.1.2:8080')
 // Обязательно оставь http:// перед цифрами!
-const PROXY_URL = 'http://85.220.141.220:80'; 
+const PROXY_URL = 'http://223.206.124.22:8080'; 
 
 const FLIBUSTA_HOST = 'https://flibusta.site'; 
 // -----------------
